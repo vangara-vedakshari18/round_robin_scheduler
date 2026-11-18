@@ -1,0 +1,34 @@
+(function(root){
+function runTests(){const api=typeof module!=='undefined'?require('./engine.js'):root,{simulate,inspect,registers,csvImport,csvExport}=api,results=[];
+ const assert=(condition,message='Assertion failed')=>{if(!condition)throw Error(message);},equal=(a,b)=>assert(JSON.stringify(a)===JSON.stringify(b),JSON.stringify(a)+' ≠ '+JSON.stringify(b));
+ const test=(name,fn)=>{try{fn();results.push({name,pass:true});}catch(e){results.push({name,pass:false,error:e.message});}};
+ const job=(name,arrival,cpu,io='')=>({name,arrival,cpu,io,priority:3,memory:64});
+ const timeline=m=>Array.from({length:m.duration/1000},(_,t)=>{const s=m.segments.find(s=>s.start<=t*1000&&s.end>t*1000);return s?.kind==='run'?s.id:null;});
+ const sample=[3,6,4,5,2].map((n,i)=>job(String.fromCharCode(65+i),i*2,String(n)));
+ test('Professor’s exact 20-second schedule',()=>equal(timeline(simulate(sample)),[0,0,1,0,1,2,1,3,2,1,4,3,2,1,4,3,2,1,3,3]));
+ test('Original completion, waiting and response metrics',()=>{const m=simulate(sample);equal(m.jobs.map(j=>j.finish),[4000,18000,17000,20000,15000]);equal(m.jobs.map(j=>j.wait),[1000,10000,9000,9000,5000]);equal(m.jobs.map(j=>j.first-j.arrival),[0,0,1000,1000,2000]);});
+ test('FIFO order for simultaneous arrivals',()=>equal(timeline(simulate([job('A',0,'2'),job('B',0,'2')])),[0,1,0,1]));
+ test('Single job: no self-switches, large time jump',()=>{const m=simulate([job('A',0,'1000000')]);equal(m.duration,1e9);equal(m.switches,0);assert(m.events.length<10);equal(inspect(m,999999000).jobs[0].used,999999000);});
+ test('Bursts 1,000+ rotate without time truncation',()=>{const m=simulate([job('A',0,'1000'),job('B',0,'2500')]);equal(m.duration,3500000);equal(m.jobs.map(j=>j.used),[1000000,2500000]);equal(m.jobs[0].finish,1999000);});
+ test('Configurable quantum of 2 seconds',()=>equal(timeline(simulate([job('A',0,'3'),job('B',0,'3')],{quantum:2})),[0,0,1,1,0,1]));
+ test('I/O releases CPU and resumes next CPU burst',()=>{const m=simulate([job('A',0,'1/1','3'),job('B',0,'2')]);equal(timeline(m),[0,1,1,null,0]);equal(m.jobs[0].finish,5000);equal(m.jobs[0].wait,0);});
+ test('I/O completion enters before expired job',()=>{const m=simulate([job('A',0,'1/1','1'),job('B',0,'3')]);equal(timeline(m),[0,1,0,1,1]);});
+ test('CPU burst completion beats quantum requeue',()=>{const m=simulate([job('A',0,'1/1','2'),job('B',0,'4')]);assert(!m.events.some(e=>e.kind==='REQUEUE'&&e.id===0));});
+ test('Idle gaps and dispatch after idle are free',()=>{const m=simulate([job('A',3,'1'),job('B',8,'1')],{cost:2});equal(m.idle,7000);equal(m.overhead,0);equal(m.duration,9000);});
+ test('Fractional switch overhead and ready wait',()=>{const m=simulate([job('A',0,'2'),job('B',0,'2')],{cost:.5});equal(m.switches,3);equal(m.overhead,1500);equal(m.duration,5500);equal(m.jobs.map(j=>j.wait),[2000,3500]);});
+ test('Arrival during switch keeps the reserved target',()=>{const m=simulate([job('A',0,'2'),job('B',0,'1'),job('C',1.5,'1')],{cost:1});equal(inspect(m,1500).jobs.map(j=>j.status),['ready','switching','ready']);equal(m.jobs[1].first,2000);});
+ test('Arrival within a sole job’s quantum waits for boundary',()=>{const m=simulate([job('A',0,'10'),job('B',3,'1')],{quantum:2});equal(m.jobs[1].first,4000);});
+ test('Register context survives waiting and resumes continuously',()=>{const m=simulate([job('A',0,'2'),job('B',0,'2')]);const a=inspect(m,1000).jobs[0],b=inspect(m,1999).jobs[0],c=inspect(m,2500).jobs[0];equal(registers(a),registers(b));assert(registers(c).R0>registers(b).R0);equal(registers(a).PC,'0x1190');});
+ test('Memory and priority do not change pure RR order',()=>{const a=[job('A',0,'2'),job('B',0,'2')],b=a.map((j,i)=>({...j,priority:99-i,memory:2048}));equal(timeline(simulate(a)),timeline(simulate(b)));});
+ test('Input rejects zero, negative, infinite and mismatched bursts',()=>{for(const input of [[job('A',0,'0')],[job('A',-1,'2')],[job('A',0,'Infinity')],[job('A',0,'2/3','')],[job('A',0,'2','1')]]){let failed=false;try{simulate(input);}catch{failed=true;}assert(failed);}});
+ test('CSV round trip preserves CPU/I/O lists and metadata',()=>{const a=[job('A',0,'5/4','3'),job('B',2,'8')];equal(timeline(simulate(csvImport(csvExport(a)))),timeline(simulate(a)));});
+ test('Millisecond quantum and overhead conserve time',()=>{const m=simulate([job('A',0,'0.003'),job('B',0,'0.002')],{quantum:.001,cost:.001});equal(m.duration,m.busy+m.idle+m.overhead);equal(m.busy,5);});
+ test('100 simultaneous processes remain FIFO',()=>{const m=simulate(Array.from({length:100},(_,i)=>job('P'+i,0,'1')));equal(m.jobs.map(j=>j.first),Array.from({length:100},(_,i)=>i*1000));});
+ test('Randomized accounting and state invariants (100 workloads)',()=>{for(let seed=1;seed<=100;seed++){const a=Array.from({length:1+seed%7},(_,i)=>job('P'+i,(seed+i*2)%5,`${1+(seed+i)%5}/${1+(seed*i)%4}`,String(1+(seed+i)%3))),m=simulate(a,{quantum:1+seed%3,cost:(seed%3)*.1});equal(m.duration,m.busy+m.idle+m.overhead);for(const j of m.jobs){equal(j.used,j.total);equal(j.finish-j.arrival,j.total+j.ioTotal+j.wait);assert(j.first>=j.arrival);}for(let k=0;k<10;k++){const f=inspect(m,Math.floor(m.duration*k/10));assert(f.jobs.filter(j=>j.status==='running').length<=1);assert(f.jobs.every(j=>j.used>=0&&j.used<=j.total));}}});
+ // Independent one-second oracle for integer, zero-overhead workloads.
+ function oracle(data,q){const a=data.map((j,i)=>({...j,id:i,cpu:j.cpu.split('/').map(Number),io:j.io.split('/').filter(Boolean).map(Number),phase:0,left:Number(j.cpu.split('/')[0]),wake:null,state:'new'}));let t=0,r=null,s=0,out=[],queue=[];while(a.some(j=>j.state!=='done')){a.filter(j=>j.state==='new'&&j.arrival===t).forEach(j=>{j.state='ready';queue.push(j);});a.filter(j=>j.state==='blocked'&&j.wake===t).forEach(j=>{j.state='ready';queue.push(j);});if(r){if(!r.left){if(r.phase<r.io.length){r.state='blocked';r.wake=t+r.io[r.phase];r.phase++;r.left=r.cpu[r.phase];}else r.state='done';r=null;}else if(s===q){if(queue.length){r.state='ready';queue.push(r);r=null;}else s=0;}}if(!r&&queue.length){r=queue.shift();r.state='running';s=0;}if(a.every(j=>j.state==='done'))break;out.push(r?.id??null);if(r){r.left--;s++;}t++;if(t>1000)throw Error('Oracle timeout');}return out;}
+ test('Independent tick oracle agrees on 150 CPU/I/O workloads',()=>{for(let seed=1;seed<=150;seed++){const a=Array.from({length:1+seed%5},(_,i)=>job('P'+i,(seed+i*3)%7,`${1+(seed+i)%5}/${1+(seed*i)%4}`,String(1+(seed+i)%4))),q=1+seed%4;equal(timeline(simulate(a,{quantum:q})),oracle(a,q));}});
+ return results;
+}
+if(typeof module!=='undefined'){module.exports={runTests};if(require.main===module){const r=runTests();r.forEach(x=>console.log((x.pass?'PASS':'FAIL')+' '+x.name+(x.error?': '+x.error:'')));process.exitCode=r.some(x=>!x.pass)?1:0;}}else root.runTests=runTests;
+})(typeof self!=='undefined'?self:this);

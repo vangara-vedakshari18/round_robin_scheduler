@@ -1,0 +1,21 @@
+PASS Professor’s exact 20-second schedule
+PASS Original completion, waiting and response metrics
+PASS FIFO order for simultaneous arrivals
+PASS Single job: no self-switches, large time jump
+PASS Bursts 1,000+ rotate without time truncation
+PASS Configurable quantum of 2 seconds
+PASS I/O releases CPU and resumes next CPU burst
+PASS I/O completion enters before expired job
+PASS CPU burst completion beats quantum requeue
+PASS Idle gaps and dispatch after idle are free
+PASS Fractional switch overhead and ready wait
+PASS Arrival during switch keeps the reserved target
+PASS Arrival within a sole job’s quantum waits for boundary
+PASS Register context survives waiting and resumes continuously
+PASS Memory and priority do not change pure RR order
+PASS Input rejects zero, negative, infinite and mismatched bursts
+PASS CSV round trip preserves CPU/I/O lists and metadata
+PASS Millisecond quantum and overhead conserve time
+PASS 100 simultaneous processes remain FIFO
+PASS Randomized accounting and state invariants (100 workloads)
+PASS Independent tick oracle agrees on 150 CPU/I/O workloads
